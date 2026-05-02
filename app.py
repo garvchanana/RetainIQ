@@ -1,680 +1,901 @@
-﻿from pathlib import Path
+﻿from __future__ import annotations
 
-import joblib
+import json
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
+from google import genai
+from google.genai import errors as genai_errors
+
+load_dotenv()
 
 
+# -----------------------------
+# Config
+# -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / "model" / "xgboost_model.pkl"
-FEATURES_PATH = BASE_DIR / "model" / "features.pkl"
-SAMPLE_PATH = BASE_DIR / "data" / "sample_input.csv"
+DATA_DIR = BASE_DIR / "data"
 
-DEFAULT_CHURN_THRESHOLD = 0.45
+PROCESSED_FINTECH_PATH = DATA_DIR / "processed_fintech_data.csv"
+SEGMENT_SCORES_PATH = DATA_DIR / "fintech_segment_scores.csv"
+HYPOTHESES_PATH = DATA_DIR / "fintech_top3_churn_hypotheses.csv"
+SCORED_USERS_PATH = DATA_DIR / "fintech_scored_users.csv"
+
+DEFAULT_THRESHOLD = 0.45
+BEST_THRESHOLD_NOTEBOOK = 0.29
 
 
 st.set_page_config(
-    page_title="InsightForge AI - Customer Decision Engine",
+    page_title="RetainIQ",
     page_icon="📊",
     layout="wide",
 )
 
-st.markdown("""
-<style>
-    .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 2rem;
-    }
-
-    /* Fix metric card styling */
-    div[data-testid="stMetric"] {
-        border: 1px solid #E5E7EB;
-        border-radius: 12px;
-        padding: 0.8rem;
-        background: #FFFFFF;
-        color: #111827 !important;  /* 🔥 FIX TEXT VISIBILITY */
-    }
-
-    div[data-testid="stMetric"] label {
-        color: #6B7280 !important;  /* label text */
-        font-size: 0.9rem;
-    }
-
-    div[data-testid="stMetric"] div {
-        color: #111827 !important;  /* main value */
-        font-weight: bold;
-    }
-
-    .app-title {
-        font-size: 2.0rem;
-        font-weight: 700;
-        margin-bottom: 0.2rem;
-        color: #FFFFFF;
-    }
-
-    .app-subtitle {
-        color: #9CA3AF;
-        margin-bottom: 1rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-@st.cache_resource
-def load_assets():
-    model = joblib.load(MODEL_PATH)
-    features = joblib.load(FEATURES_PATH)
-    return model, list(features)
-
-
-def _safe_qcut(series: pd.Series, q: int, labels: list[int], use_rank: bool = False) -> pd.Series:
-    s = pd.to_numeric(series, errors="coerce")
-    if use_rank:
-        s = s.rank(method="first")
-
-    if s.notna().sum() == 0:
-        return pd.Series([labels[len(labels) // 2]] * len(s), index=s.index, dtype="int64")
-
-    unique_vals = s.nunique(dropna=True)
-    if unique_vals < 2:
-        fallback = int(np.median(labels))
-        return pd.Series([fallback] * len(s), index=s.index, dtype="int64")
-
-    try:
-        out = pd.qcut(s, q=q, labels=labels, duplicates="drop")
-        if out.isna().any():
-            fallback = int(np.median(labels))
-            out = out.astype("object").fillna(fallback)
-        return out.astype(int)
-    except Exception:
-        ranked = s.rank(pct=True)
-        cuts = np.linspace(0, 1, len(labels) + 1)
-        bucket_idx = np.digitize(ranked.fillna(0.5), cuts[1:-1], right=True)
-        mapped = np.array(labels, dtype=int)[np.clip(bucket_idx, 0, len(labels) - 1)]
-        return pd.Series(mapped, index=s.index, dtype="int64")
-
-
-def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    data = df.copy()
-
-    skew_cols = ["Total_Purchases", "Lifetime_Value", "Credit_Balance"]
-    for col in skew_cols:
-        if col in data.columns:
-            data[col] = np.log1p(pd.to_numeric(data[col], errors="coerce").clip(lower=0))
-
-    rate_cols = ["Cart_Abandonment_Rate", "Discount_Usage_Rate", "Returns_Rate", "Email_Open_Rate"]
-    for col in rate_cols:
-        if col in data.columns:
-            data[col] = pd.to_numeric(data[col], errors="coerce").clip(0, 1)
-
-    for col in data.columns:
-        if col in ["Gender", "Country", "City", "Signup_Quarter", "segment_label", "churn_risk", "recommendation", "secondary_insight"]:
-            continue
-        try:
-            data[col] = pd.to_numeric(data[col])
-        except Exception:
-            pass
-
-    # ==============================
-    # SAFE AGE HANDLING (NO ROW DROP)
-    # ==============================
-    if "Age" in data.columns:
-        data["Age"] = pd.to_numeric(data["Age"], errors="coerce")
-        data["Age"] = data["Age"].clip(lower=18, upper=80)
-
-    # ==============================
-    # SAFE NUMERIC HANDLING (NO ROW DROP)
-    # ==============================
-    num_cols = data.select_dtypes(include=[np.number]).columns
-
-    for col in num_cols:
-        data[col] = pd.to_numeric(data[col], errors="coerce")
-
-        # Replace NaN with median
-        data[col] = data[col].fillna(data[col].median())
-
-        # Clip negative values instead of dropping
-        data[col] = data[col].clip(lower=0)
-
-
-    required = {
-        "Days_Since_Last_Purchase",
-        "Total_Purchases",
-        "Average_Order_Value",
-        "Login_Frequency",
-        "Session_Duration_Avg",
-        "Pages_Per_Session",
-        "Email_Open_Rate",
-        "Social_Media_Engagement_Score",
-        "Cart_Abandonment_Rate",
-        "Returns_Rate",
-        "Customer_Service_Calls",
-        "Membership_Years",
-        "Lifetime_Value",
-    }
-
-    missing_required = [c for c in required if c not in data.columns]
-    if missing_required:
-        raise ValueError(f"Missing required columns for feature engineering: {', '.join(sorted(missing_required))}")
-
-    data["recency_score"] = _safe_qcut(data["Days_Since_Last_Purchase"], q=4, labels=[4, 3, 2, 1], use_rank=False)
-    data["frequency_score"] = _safe_qcut(data["Total_Purchases"], q=4, labels=[1, 2, 3, 4], use_rank=True)
-    data["monetary_score"] = _safe_qcut(data["Average_Order_Value"], q=4, labels=[1, 2, 3, 4], use_rank=False)
-
-    data["RFM_score"] = (
-        data["recency_score"].astype(int)
-        + data["frequency_score"].astype(int)
-        + data["monetary_score"].astype(int)
-    )
-
-    data["engagement_score"] = (
-        pd.to_numeric(data["Login_Frequency"], errors="coerce")
-        + pd.to_numeric(data["Session_Duration_Avg"], errors="coerce")
-        + pd.to_numeric(data["Pages_Per_Session"], errors="coerce")
-        + pd.to_numeric(data["Email_Open_Rate"], errors="coerce")
-        + pd.to_numeric(data["Social_Media_Engagement_Score"], errors="coerce")
-    ) / 5
-
-    data["risk_score"] = (
-        pd.to_numeric(data["Cart_Abandonment_Rate"], errors="coerce")
-        + pd.to_numeric(data["Returns_Rate"], errors="coerce")
-        + pd.to_numeric(data["Customer_Service_Calls"], errors="coerce")
-    ) / 3
-
-    data["loyalty_score"] = (
-        pd.to_numeric(data["Membership_Years"], errors="coerce")
-        + pd.to_numeric(data["Total_Purchases"], errors="coerce")
-    ) / 2
-
-    data["friction_score"] = (
-        pd.to_numeric(data["Cart_Abandonment_Rate"], errors="coerce")
-        + pd.to_numeric(data["Returns_Rate"], errors="coerce")
-    ) / 2
-
-    data["support_intensity"] = (
-        pd.to_numeric(data["Customer_Service_Calls"], errors="coerce")
-        / (pd.to_numeric(data["Total_Purchases"], errors="coerce") + 1)
-    )
-
-    data["value_per_purchase"] = (
-        pd.to_numeric(data["Lifetime_Value"], errors="coerce")
-        / (pd.to_numeric(data["Total_Purchases"], errors="coerce") + 1)
-    )
-
-    return data
-
-
-def segment_from_rfm(rfm_score: float) -> str:
-    rfm_int = int(round(rfm_score))
-    if rfm_int == 10:
-        return "High Value"
-    if rfm_int == 7:
-        return "Potential Loyalists"
-    if rfm_int == 5:
-        return "At Risk"
-    return "Low Value"
-
-
-def build_thresholds(data: pd.DataFrame) -> dict:
-    return {
-        "engagement_low": float(data["engagement_score"].quantile(0.25)),
-        "friction_high": float(data["friction_score"].quantile(0.75)),
-        "support_high": float(data["support_intensity"].quantile(0.75)),
-        "loyalty_high": float(data["loyalty_score"].quantile(0.75)),
-        "value_high": float(data["value_per_purchase"].quantile(0.75)),
-        "risk_high": float(data["risk_score"].quantile(0.75)),
-    }
-
-
-def generate_decision(row: pd.Series, t: dict, churn_threshold: float) -> tuple[str, str]:
-    high_churn = row["churn_probability"] >= churn_threshold
-    low_churn = row["churn_probability"] < churn_threshold
-    high_value = row["segment_label"] == "High Value"
-    low_engagement = row["engagement_score"] <= t["engagement_low"]
-    high_friction = row["friction_score"] >= t["friction_high"]
-    high_support = row["support_intensity"] >= t["support_high"]
-    high_loyalty = row["loyalty_score"] >= t["loyalty_high"]
-    high_value_per_purchase = row["value_per_purchase"] >= t["value_high"]
-
-    if high_churn and high_value:
-        primary = "Offer retention incentive (discount/loyalty program)"
-    elif high_churn and low_engagement:
-        primary = "Trigger re-engagement campaign (email/push)"
-    elif high_friction:
-        primary = "Improve checkout/user experience"
-    elif high_support:
-        primary = "Proactive customer support intervention"
-    elif high_loyalty and low_churn:
-        primary = "Upsell or premium offering"
-    elif high_value_per_purchase:
-        primary = "Target with premium bundles"
-    else:
-        primary = "Maintain lifecycle nurture sequence with personalized touchpoints"
-
-    if high_churn:
-        secondary = "Churn risk is elevated; prioritize action within this cycle."
-    elif row["risk_score"] >= t["risk_high"]:
-        secondary = "Behavioral risk indicators are trending up across service and return activity."
-    elif high_loyalty:
-        secondary = "Strong loyalty indicators suggest readiness for higher-tier products."
-    elif low_engagement:
-        secondary = "Engagement is soft; optimize content cadence and message relevance."
-    else:
-        secondary = "Profile is relatively stable; monitor trend shifts weekly."
-
-    return primary, secondary
-
-
-def prepare_model_input(data: pd.DataFrame, model_features: list[str]) -> pd.DataFrame:
-    frame = data.copy()
-    for col in model_features:
-        if col not in frame.columns:
-            frame[col] = 0.0
-    return frame[model_features].apply(pd.to_numeric, errors="coerce").fillna(0.0)
-
-
-def _get_ground_truth(df: pd.DataFrame) -> pd.Series | None:
-    for col in ["churn", "Churned", "churned"]:
-        if col in df.columns:
-            y = pd.to_numeric(df[col], errors="coerce")
-            if y.notna().sum() == 0:
-                return None
-            y = (y > 0).astype(int)
-            return y
-    return None
-
-
-def find_best_threshold(y_true: pd.Series, y_prob: pd.Series) -> dict | None:
-    valid = pd.DataFrame({"y_true": y_true, "y_prob": y_prob}).dropna()
-    if valid.empty or valid["y_true"].nunique() < 2:
-        return None
-
-    thresholds = np.arange(0.05, 0.951, 0.005)
-    best_row = None
-
-    for thr in thresholds:
-        pred = (valid["y_prob"] >= thr).astype(int)
-        f1 = f1_score(valid["y_true"], pred, zero_division=0)
-        acc = accuracy_score(valid["y_true"], pred)
-        precision = precision_score(valid["y_true"], pred, zero_division=0)
-        recall = recall_score(valid["y_true"], pred, zero_division=0)
-
-        row = {
-            "threshold": float(thr),
-            "f1": float(f1),
-            "accuracy": float(acc),
-            "precision": float(precision),
-            "recall": float(recall),
+st.markdown(
+    """
+    <style>
+        .block-container {padding-top: 2.6rem; padding-bottom: 2rem;}
+        div[data-testid="stMetric"] {
+            border: 1px solid #243044;
+            border-radius: 12px;
+            padding: 0.35rem 0.55rem;
+            background: linear-gradient(145deg, #111827 0%, #0B1220 100%);
+            box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.08);
         }
+        div[data-testid="stMetricLabel"] {
+            color: #9CA3AF !important;
+        }
+        div[data-testid="stMetricValue"] {
+            color: #F9FAFB !important;
+            font-size: 1.65rem !important;
+        }
+        div[data-testid="stMetricDelta"] {
+            color: #93C5FD !important;
+        }
+        .title-wrap {margin-bottom: 0.35rem; margin-top: 0.25rem;}
+        .app-title {font-size: 2rem; font-weight: 700; color: #F9FAFB; line-height: 1.2;}
+        .app-subtitle {color: #9CA3AF; margin-top: 0.2rem;}
+        .kpi-note {
+            color: #9CA3AF;
+            font-size: 0.82rem;
+            line-height: 1.25;
+            margin-top: 0.2rem;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-        if best_row is None:
-            best_row = row
-        else:
-            if (row["f1"] > best_row["f1"]) or (
-                np.isclose(row["f1"], best_row["f1"]) and row["accuracy"] > best_row["accuracy"]
-            ):
-                best_row = row
 
-    return best_row
+# -----------------------------
+# Utilities
+# -----------------------------
+@st.cache_data(show_spinner=False)
+def load_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
 
 
-def main():
-    st.markdown("""
-    <div style="padding: 1.2rem 0;">
-        <div class="app-title">InsightForge AI</div>
-        <div class="app-subtitle">
-            Transforming customer behavior into <b>actionable business decisions</b>
+@st.cache_data(show_spinner=False)
+def load_all_data() -> dict[str, pd.DataFrame]:
+    return {
+        "processed": load_csv(PROCESSED_FINTECH_PATH),
+        "segment_scores": load_csv(SEGMENT_SCORES_PATH),
+        "hypotheses": load_csv(HYPOTHESES_PATH),
+        "scored_users": load_csv(SCORED_USERS_PATH),
+    }
+
+
+def ensure_scored_users(processed: pd.DataFrame, scored_users: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    if not scored_users.empty and "churn_probability" in scored_users.columns:
+        df = scored_users.copy()
+        # Always recompute risk from active threshold so dashboard stays synchronized.
+        df["churn_risk"] = np.where(df["churn_probability"] >= threshold, "High", "Low")
+        return df
+
+    # Fallback: build heuristic probability if scored file is not available.
+    req = ["risk_score", "support_intensity", "activity_trend", "RFM_score", "n_products_used"]
+    missing = [c for c in req if c not in processed.columns]
+    if missing:
+        out = processed.copy()
+        out["churn_probability"] = np.nan
+        out["churn_risk"] = "Unknown"
+        return out
+
+    p = processed.copy()
+    r = p["risk_score"].fillna(p["risk_score"].median())
+    s = p["support_intensity"].fillna(p["support_intensity"].median())
+    t = p["activity_trend"].fillna(0)
+    f = p["RFM_score"].fillna(p["RFM_score"].median())
+    m = p["n_products_used"].fillna(1)
+
+    raw = 1.2 * r + 1.1 * s - 0.9 * t - 0.35 * f - 0.2 * m
+    prob = 1 / (1 + np.exp(-raw))
+    p["churn_probability"] = np.clip(prob, 0.001, 0.999)
+    p["churn_risk"] = np.where(p["churn_probability"] >= threshold, "High", "Low")
+    return p
+
+
+def make_priority_bucket(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    out = df.copy()
+
+    for col in ["engagement_score", "risk_score", "support_intensity", "churn_probability", "rfm_segment", "churn_risk"]:
+        if col not in out.columns:
+            out[col] = np.nan
+
+    eng_low = out["engagement_score"].quantile(0.25) if out["engagement_score"].notna().any() else 0
+    risk_high = out["risk_score"].quantile(0.75) if out["risk_score"].notna().any() else 1
+    support_high = out["support_intensity"].quantile(0.75) if out["support_intensity"].notna().any() else 1
+
+    out["priority_bucket"] = np.select(
+        [
+            (out["churn_probability"] >= threshold) & (out["rfm_segment"] == "High Value"),
+            (out["churn_probability"] >= threshold) & (out["engagement_score"] <= eng_low),
+            (out["risk_score"] >= risk_high),
+            (out["support_intensity"] >= support_high),
+        ],
+        [
+            "Immediate Retention (High Value)",
+            "Re-engagement Priority",
+            "Risk Reduction Program",
+            "Proactive Support Intervention",
+        ],
+        default="Monitor & Nurture",
+    )
+    return out
+
+
+def render_empty_state() -> None:
+    st.error("Missing required fintech data files. Please run notebook pipeline first.")
+    st.info(
+        "Required files: `processed_fintech_data.csv`, `fintech_segment_scores.csv`, "
+        "`fintech_top3_churn_hypotheses.csv`, `fintech_scored_users.csv`"
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def generate_ai_explanation(section: str, payload: dict, api_key: str) -> str:
+    clean_key = (api_key or "").strip().replace("\r", "").replace("\n", "")
+    client = genai.Client(api_key=clean_key)
+    prompt = f"""
+    You are a fintech retention intelligence analyst.
+
+    Section: {section}
+    Metrics: {json.dumps(payload)}
+
+    Generate one sharp business insight in under 25 words.
+    Focus on churn risk, user behavior, segment trends, or retention actions.
+    Professional, executive-level, concise, and data-driven.
+    No bullets, markdown, labels, or filler language.
+    """
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        text = (response.text or "").strip()
+        return text if text else "AI explanation unavailable for this section."
+    except genai_errors.ClientError as exc:
+        raise RuntimeError(f"Gemini API request failed: {exc}") from exc
+
+
+def safe_ai_explanation(section: str, payload: dict, api_key: str, fallback_text: str) -> str:
+    try:
+        return generate_ai_explanation(section, payload, api_key)
+    except Exception:
+        return fallback_text
+
+
+# -----------------------------
+# App
+# -----------------------------
+def main() -> None:
+    st.markdown(
+        """
+        <div class='title-wrap'>
+            <div class='app-title'>RetainIQ — Fintech Segmentation & Churn Intelligence Platform</div>
+            <div class='app-subtitle'>Transforming behavioral user activity into churn intelligence, retention prioritization, and segment-driven decision analytics for fintech platforms.</div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+        """,
+        unsafe_allow_html=True,
+    )
     st.divider()
+
+    data = load_all_data()
+    processed = data["processed"]
+    segment_scores = data["segment_scores"]
+    hypotheses = data["hypotheses"]
+    scored_users = data["scored_users"]
+
+    if processed.empty:
+        render_empty_state()
+        st.stop()
+
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_key = gemini_key.strip().replace("\r", "").replace("\n", "")
+    if not gemini_key:
+        st.error("GEMINI_API_KEY is required. Add it to .env in the project root and rerun.")
+        st.stop()
 
     with st.sidebar:
         st.markdown("## ⚙️ Control Panel")
 
-        st.markdown("### 📂 Data Source")
-
-        data_option = st.radio(
-            "Select Dataset",
-            [
-                "Sample Input",
-                "Preprocessed Data",
-                "Raw Ecommerce Data"
-            ]
-        )
-
-        st.markdown("---")
-
-        st.markdown("### 🎯 Churn Threshold")
-        threshold_input = st.slider(
-            "Set churn classification threshold",
+        threshold_slider = st.slider(
+            "Churn risk threshold",
             min_value=0.05,
             max_value=0.95,
-            value=DEFAULT_CHURN_THRESHOLD,
+            value=DEFAULT_THRESHOLD,
             step=0.01,
         )
-        auto_use_best_threshold = st.checkbox(
-            "Use best threshold from labeled data",
+        use_best_threshold = st.checkbox(
+            f"Use Best Threshold ({BEST_THRESHOLD_NOTEBOOK:.2f})",
             value=False,
+            help="Switch to the calibrated best threshold for classification.",
         )
+        threshold = BEST_THRESHOLD_NOTEBOOK if use_best_threshold else threshold_slider
+        st.caption(
+            f"Active threshold: {threshold:.2f} "
+            f"({'Best' if use_best_threshold else 'Manual'})"
+        )
+
+        rfm_options = sorted(processed["rfm_segment"].dropna().astype(str).unique().tolist()) if "rfm_segment" in processed.columns else []
+        life_options = sorted(processed["lifecycle_stage"].dropna().astype(str).unique().tolist()) if "lifecycle_stage" in processed.columns else []
+        mix_options = sorted(processed["product_mix_segment"].dropna().astype(str).unique().tolist()) if "product_mix_segment" in processed.columns else []
+
+        rfm_choice = st.selectbox("RFM Segment", ["All"] + rfm_options, index=0)
+        life_choice = st.selectbox("Lifecycle Stage", ["All"] + life_options, index=0)
+        mix_choice = st.selectbox("Product Mix Segment", ["All"] + mix_options, index=0)
+
+        top_n_segments = st.slider("Top risky segments", 5, 30, 12, 1)
+        top_n_users = st.slider("Prioritized users export", 50, 1000, 200, 50)
 
         st.markdown("---")
+        st.caption(
+            "Analytics controls for churn intelligence, segment monitoring, and retention prioritization."
+        )
 
-        st.markdown("### ℹ️ Info")
-        st.info("Decision-ready churn intelligence with calibrated risk thresholds, actionable interventions, and measurable business impact.")
-    
-    raw_df = None
-    source_name = None
+    scored = ensure_scored_users(processed, scored_users, threshold)
+    scored = make_priority_bucket(scored, threshold)
 
-    if data_option == "Sample Input":
-        raw_df = pd.read_csv("data/sample_input.csv")
-        source_name = "Sample Input"
+    # Apply filters
+    f = scored.copy()
+    if rfm_choice != "All" and "rfm_segment" in f.columns:
+        f = f[f["rfm_segment"].astype(str) == rfm_choice]
+    if life_choice != "All" and "lifecycle_stage" in f.columns:
+        f = f[f["lifecycle_stage"].astype(str) == life_choice]
+    if mix_choice != "All" and "product_mix_segment" in f.columns:
+        f = f[f["product_mix_segment"].astype(str) == mix_choice]
 
-    elif data_option == "Preprocessed Data":
-        raw_df = pd.read_csv("data/processed_data.csv")
-        source_name = "Preprocessed Data"
-
-    elif data_option == "Raw Ecommerce Data":
-        raw_df = pd.read_csv(r"D:\Python\Data Science Projects\InsightForge AI\data\ecommerce_customer_churn_dataset.csv")
-        source_name = "Raw Dataset"
-
-    if raw_df is None:
-        st.info("Upload a CSV from the sidebar, or enable sample data.")
+    if f.empty:
+        st.warning("No rows match current filter selection.")
         st.stop()
 
-    st.caption(f"Data source: {source_name} | Rows: {len(raw_df):,}")
+    with st.sidebar:
 
-    model, model_features = load_assets()
+        st.markdown("---")
+        st.markdown("### 📦 Export Intelligence Reports")
 
-    try:
-        scored_df = apply_feature_engineering(raw_df)
-    except Exception as exc:
-        st.error(str(exc))
-        st.stop()
+        with st.expander("Download Reports"):
 
-    if scored_df.empty:
-        st.error("No valid rows after data consistency checks. Please review the input file.")
-        st.stop()
+            prioritized = f.sort_values(
+                "churn_probability",
+                ascending=False
+            ).head(top_n_users).copy()
 
-    X_infer = prepare_model_input(scored_df, model_features)
-    scored_df["churn_probability"] = model.predict_proba(X_infer)[:, 1]
+            keep_cols = [
+                "user_id",
+                "segment_key",
+                "rfm_segment",
+                "lifecycle_stage",
+                "product_mix_segment",
+                "churn_probability",
+                "churn_risk",
+                "priority_bucket",
+            ]
 
-    y_true = _get_ground_truth(raw_df)
-    best_threshold = None
-    if y_true is not None and len(y_true) == len(scored_df):
-        best_threshold = find_best_threshold(y_true.reset_index(drop=True), scored_df["churn_probability"].reset_index(drop=True))
+            keep_cols = [c for c in keep_cols if c in prioritized.columns]
 
-    selected_threshold = threshold_input
-    if auto_use_best_threshold and best_threshold is not None:
-        selected_threshold = best_threshold["threshold"]
+            p_csv = prioritized[keep_cols].to_csv(index=False).encode("utf-8")
 
-    scored_df["churn_risk"] = np.where(scored_df["churn_probability"] >= selected_threshold, "High", "Low")
-    scored_df["segment_label"] = scored_df["RFM_score"].apply(segment_from_rfm)
+            st.download_button(
+                "📥 Prioritized Users",
+                data=p_csv,
+                file_name="fintech_prioritized_users.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
-    thresholds = build_thresholds(scored_df)
-    decisions = scored_df.apply(lambda row: generate_decision(row, thresholds, selected_threshold), axis=1)
-    scored_df["recommendation"] = decisions.apply(lambda x: x[0])
-    scored_df["secondary_insight"] = decisions.apply(lambda x: x[1])
+            if not hypotheses.empty:
+                h_csv = hypotheses.to_csv(index=False).encode("utf-8")
 
-    scored_df = scored_df.reset_index(drop=True)
-    scored_df["customer_id"] = scored_df.index + 1
+                st.download_button(
+                    "📥 Driver Hypotheses",
+                    data=h_csv,
+                    file_name="fintech_top3_churn_hypotheses.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
-    st.markdown("### 📊 Key Metrics")
+            if not segment_scores.empty:
+                s_csv = segment_scores.to_csv(index=False).encode("utf-8")
 
-    m1, m2, m3, m4 = st.columns(4)
-
-    m1.metric("Customers", f"{len(scored_df):,}")
-    m2.metric("Avg Churn Risk", f"{scored_df['churn_probability'].mean():.2%}")
-    m3.metric("High-Risk", f"{(scored_df['churn_risk'] == 'High').sum():,}")
-    m4.metric("Threshold", f"{selected_threshold:.2f}")
-
-    if best_threshold is not None:
-        st.markdown("### ✅ Best Threshold Analysis")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Best Threshold", f"{best_threshold['threshold']:.3f}")
-        c2.metric("F1 Score", f"{best_threshold['f1']:.3f}")
-        c3.metric("Accuracy", f"{best_threshold['accuracy']:.3f}")
-        c4.metric("Precision / Recall", f"{best_threshold['precision']:.3f} / {best_threshold['recall']:.3f}")
-    else:
-        st.info("Best-threshold analysis is available when churn labels are present in the input data.")
-
-    st.markdown(" ")
-
-    st.markdown("### 🔥 High-Risk Customer Insights")
-    st.caption("Top customers requiring immediate intervention")
-    top10 = scored_df.sort_values("churn_probability", ascending=False).head(10)
-    st.dataframe(
-        top10[["customer_id", "segment_label", "churn_probability", "churn_risk", "recommendation", "secondary_insight"]],
-        use_container_width=True,
-        hide_index=True,
+                st.download_button(
+                    "📥 Segment Risk Report",
+                    data=s_csv,
+                    file_name="fintech_segment_scores.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    top_bucket_current = (
+        f["priority_bucket"].value_counts().index[0]
+        if "priority_bucket" in f.columns and not f["priority_bucket"].empty
+        else "Monitor & Nurture"
     )
+    high_ratio_current = ((f["churn_risk"] == "High").mean() * 100) if "churn_risk" in f.columns else 0.0
+    avg_prob_current = (f["churn_probability"].mean() * 100) if "churn_probability" in f.columns else 0.0
 
-    
-    st.markdown("### 📈 Churn Risk Distribution")
-    st.caption("Distribution of predicted churn probabilities across the customer base, highlighting risk concentration and decision thresholds.")
-    fig, ax = plt.subplots(figsize=(8, 4))
-
-    ax.hist(
-        scored_df["churn_probability"],
-        bins=20,
-        color="#2563EB",
-        alpha=0.85
-    )
-
-    ax.axvline(
-        selected_threshold,
-        color="#DC2626",
-        linestyle="--",
-        linewidth=2,
-        label="Risk Threshold"
-    )
-
-    ax.set_title("Churn Probability Distribution", fontsize=12, fontweight="bold")
-    ax.set_xlabel("Churn Probability")
-    ax.set_ylabel("Customer Count")
-
-    ax.legend()
-    ax.grid(alpha=0.2)
-
-    st.pyplot(fig)
-
-    st.markdown("""
-    This visualization shows how customers are distributed based on their predicted churn probability.  
-    - The **right side** represents high-risk customers  
-    - The **dotted line** indicates the decision threshold used for action  
-    """)
-
-    high_risk_pct = (scored_df["churn_probability"] >= selected_threshold).mean()
-
-    if high_risk_pct >= 0.5:
-        st.error("🚨 Critical churn risk detected. Immediate retention strategy required across segments.")
-
-    elif high_risk_pct >= 0.3:
-        st.warning("⚠️ Elevated churn risk. Focus on high-value and high-risk customer segments.")
-
-    elif high_risk_pct >= 0.15:
-        st.info("🔍 Moderate churn signals detected. Targeted engagement strategies recommended.")
-
-    else:
-        st.success("✅ Customer base is stable. Maintain current engagement and monitor trends.")
-
-    st.markdown("### 🧠 Segment Risk Analysis")
-    st.caption("Identifying high-risk customer segments for targeted intervention")
-
-    segment_risk = scored_df.groupby("segment_label")["churn_probability"].mean()
-    for seg, val in segment_risk.items():
-        if val >= 0.35:
-            st.warning(f"⚠️ {seg}: {val:.2f} → High churn risk (priority segment)")
-        elif val >= 0.2:
-            st.info(f"🔍 {seg}: {val:.2f} → Moderate risk")
-        else:
-            st.success(f"✅ {seg}: {val:.2f} → Stable segment")
-
-    st.markdown("### 📌 Executive Decision Summary")
-    st.caption("Prioritized intervention buckets and segment risk concentration.")
-
-    scored_df["priority_bucket"] = np.select(
-        [
-            (scored_df["churn_risk"] == "High") & (scored_df["segment_label"] == "High Value"),
-            (scored_df["churn_risk"] == "High") & (scored_df["engagement_score"] <= thresholds["engagement_low"]),
-            (scored_df["friction_score"] >= thresholds["friction_high"]),
-            (scored_df["support_intensity"] >= thresholds["support_high"]),
-            (scored_df["churn_risk"] == "Low") & (scored_df["loyalty_score"] >= thresholds["loyalty_high"]),
-        ],
-        [
-            "Immediate Retention (High-Value Churn Risk)",
-            "Re-Engagement Campaign Priority",
-            "Checkout/Experience Optimization",
-            "Proactive Support Intervention",
-            "Upsell/Premium Opportunity",
-        ],
-        default="Monitor & Nurture",
-    )
-
-    bucket_summary = (
-        scored_df["priority_bucket"]
-        .value_counts()
-        .rename_axis("priority_bucket")
-        .reset_index(name="customers")
-    )
-    bucket_summary["share_pct"] = (bucket_summary["customers"] / len(scored_df) * 100).round(2)
-
-    total_customers = len(scored_df)
-    high_risk_count = int((scored_df["churn_risk"] == "High").sum())
-    priority_mask = (
-        (scored_df["churn_risk"] == "High")
-        & (
-            (scored_df["engagement_score"] <= thresholds["engagement_low"])
-            | (scored_df["friction_score"] >= thresholds["friction_high"])
-            | (scored_df["support_intensity"] >= thresholds["support_high"])
+    # -----------------------------
+    # 📌 Executive Snapshot
+    # -----------------------------
+    st.markdown("### 📌 Executive Snapshot")
+    exec_payload = {
+        "users_analyzed": int(len(f)),
+        "avg_churn_probability": float(f["churn_probability"].mean()),
+        "high_risk_users": int((f["churn_risk"] == "High").sum()),
+        "threshold": float(threshold),
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Executive Snapshot",
+            exec_payload,
+            gemini_key,
+            "A quick view of current portfolio exposure: coverage, average risk intensity, and active decision threshold.",
         )
     )
-    priority_count = int(priority_mask.sum())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Users Analyzed", f"{len(f):,}")
+    c2.metric("Avg Churn Probability", f"{f['churn_probability'].mean():.2%}")
+    c3.metric("High-Risk Users", f"{(f['churn_risk'] == 'High').sum():,}")
+    c4.metric("Threshold", f"{threshold:.2f}")
 
-    critical_mask = priority_mask & (
-        scored_df["churn_probability"] >= min(0.95, selected_threshold + 0.15)
+    n1, n2, n3, n4 = st.columns(4)
+    n1.markdown("<div class='kpi-note'>Total users included after current segment filters.</div>", unsafe_allow_html=True)
+    n2.markdown("<div class='kpi-note'>Mean calibrated churn likelihood across selected users.</div>", unsafe_allow_html=True)
+    n3.markdown("<div class='kpi-note'>Users at or above threshold; immediate retention pool.</div>", unsafe_allow_html=True)
+    n4.markdown("<div class='kpi-note'>Decision cut-off used to classify High vs Low churn risk.</div>", unsafe_allow_html=True)
+
+    # -----------------------------
+    # 🧩 Segmentation Intelligence
+    # -----------------------------
+    st.divider()
+    st.markdown("### 🧩 Segmentation Intelligence")
+    seg_payload = {
+        "rfm_segments": int(f["rfm_segment"].nunique()) if "rfm_segment" in f.columns else 0,
+        "lifecycle_stages": int(f["lifecycle_stage"].nunique()) if "lifecycle_stage" in f.columns else 0,
+        "product_mix_segments": int(f["product_mix_segment"].nunique()) if "product_mix_segment" in f.columns else 0,
+        "avg_churn_probability": float(f["churn_probability"].mean()),
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Segmentation Intelligence",
+            seg_payload,
+            gemini_key,
+            "This section explains where churn concentration is forming across behavior layers: RFM, lifecycle, and product mix.",
+        )
     )
-    critical_count = int(critical_mask.sum())
+    left, right = st.columns([1.25, 1])
 
-    vip_mask = critical_mask & (scored_df["segment_label"] == "High Value")
-    vip_count = int(vip_mask.sum())
+    with left:
+        st.markdown("#### Segment Risk Heatmap")
+        if {"rfm_segment", "lifecycle_stage", "churn_probability"}.issubset(f.columns):
+            heat = f.pivot_table(
+                index="rfm_segment",
+                columns="lifecycle_stage",
+                values="churn_probability",
+                aggfunc="mean",
+            )
+            heat_pct = (heat * 100).round(2)
+            fig_h, ax_h = plt.subplots(figsize=(8.2, 4.4))
+            im = ax_h.imshow(heat_pct.fillna(0).values, cmap="YlGnBu", aspect="auto")
+            ax_h.set_xticks(np.arange(len(heat_pct.columns)))
+            ax_h.set_yticks(np.arange(len(heat_pct.index)))
+            ax_h.set_xticklabels(heat_pct.columns)
+            ax_h.set_yticklabels(heat_pct.index)
+            ax_h.set_title("Segment Risk Heatmap (%)", fontsize=11, fontweight="bold")
+            plt.setp(ax_h.get_xticklabels(), rotation=20, ha="right")
 
-    funnel_df = pd.DataFrame(
+            for i in range(len(heat_pct.index)):
+                for j in range(len(heat_pct.columns)):
+                    val = heat_pct.iloc[i, j]
+                    label = "—" if pd.isna(val) else f"{val:.2f}"
+                    ax_h.text(j, i, label, ha="center", va="center", color="#0B1220", fontsize=9, fontweight="bold")
+
+            cbar = fig_h.colorbar(im, ax=ax_h, fraction=0.046, pad=0.04)
+            cbar.set_label("Churn Probability (%)")
+            st.pyplot(fig_h)
+        else:
+            st.info("Required columns for heatmap are missing.")
+
+    with right:
+        st.markdown("#### Product Mix Risk")
+        if {"product_mix_segment", "churn_probability"}.issubset(f.columns):
+            mix = f.groupby("product_mix_segment", as_index=False).agg(
+                avg_churn_probability=("churn_probability", "mean"),
+                users=("user_id", "count"),
+            )
+            mix["user_share_pct"] = (mix["users"] / max(len(f), 1) * 100).round(2)
+            mix["avg_churn_pct"] = (mix["avg_churn_probability"] * 100).round(2)
+            mix["risk_load"] = (mix["users"] * mix["avg_churn_probability"]).round(2)
+            mix = mix.sort_values(["avg_churn_probability", "users"], ascending=[False, False]).reset_index(drop=True)
+            fig_mix, ax_mix_left = plt.subplots(figsize=(8.0, 4.4))
+            x = np.arange(len(mix))
+
+            bars = ax_mix_left.bar(
+                x,
+                mix["users"].values,
+                color="#1D4ED8",
+                alpha=0.85,
+                width=0.62,
+                label="Users",
+            )
+            ax_mix_left.set_ylabel("Users")
+            ax_mix_left.set_xticks(x)
+            ax_mix_left.set_xticklabels(mix["product_mix_segment"], rotation=20, ha="right")
+            ax_mix_left.grid(axis="y", alpha=0.2)
+
+            ax_mix_right = ax_mix_left.twinx()
+            ax_mix_right.plot(
+                x,
+                mix["avg_churn_pct"].values,
+                color="#DC2626",
+                marker="o",
+                linewidth=2.2,
+                label="Avg Churn (%)",
+            )
+            ax_mix_right.set_ylabel("Avg Churn (%)")
+
+            for i, row in mix.iterrows():
+                ax_mix_right.text(
+                    i,
+                    row["avg_churn_pct"] + 0.6,
+                    f"{row['avg_churn_pct']:.1f}%",
+                    color="#DC2626",
+                    ha="center",
+                    fontsize=9,
+                    fontweight="bold",
+                )
+
+            ax_mix_left.set_title("Product Mix Risk Composition", fontsize=11, fontweight="bold")
+            left_handles, left_labels = ax_mix_left.get_legend_handles_labels()
+            right_handles, right_labels = ax_mix_right.get_legend_handles_labels()
+            ax_mix_left.legend(
+                left_handles + right_handles,
+                left_labels + right_labels,
+                loc="upper right",
+                bbox_to_anchor=(0.98, 0.98),
+                frameon=True
+            )
+            st.pyplot(fig_mix)
+        else:
+            st.info("Product mix columns missing.")
+
+    # -----------------------------
+    # ⚙️ Churn Risk Engine
+    # -----------------------------
+    st.divider()
+    st.markdown("### ⚙️ Churn Risk Engine")
+    risk_payload = {
+        "avg_churn_probability": float(f["churn_probability"].mean()),
+        "high_risk_users": int((f["churn_risk"] == "High").sum()),
+        "high_risk_ratio_pct": float(high_ratio_current),
+        "threshold": float(threshold),
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Churn Risk Engine",
+            risk_payload,
+            gemini_key,
+            "Probability distribution and risky-segment ranking help prioritize interventions with calibrated confidence.",
+        )
+    )
+    c_left, c_right = st.columns([1.35, 1])
+
+    with c_left:
+        st.markdown("#### Probability Distribution")
+        fig, ax = plt.subplots(figsize=(8.5, 4.1))
+        ax.hist(f["churn_probability"].dropna(), bins=24, color="#2563EB", alpha=0.88)
+        ax.axvline(threshold, color="#DC2626", linestyle="--", linewidth=2, label="Threshold")
+        ax.set_xlabel("Churn Probability")
+        ax.set_ylabel("Users")
+        ax.set_title("Calibrated Churn Probability Distribution", fontsize=11, fontweight="bold")
+        ax.grid(alpha=0.2)
+        ax.legend()
+        st.pyplot(fig)
+
+    with c_right:
+        st.markdown("#### Top Risk Segments")
+        seg_runtime = (
+            f.groupby("segment_key", as_index=False)
+            .agg(
+                users=("user_id", "count"),
+                avg_churn_probability=("churn_probability", "mean"),
+                high_risk_users=("churn_risk", lambda x: int((x == "High").sum())),
+            )
+        )
+        seg_runtime["high_risk_ratio"] = seg_runtime["high_risk_users"] / seg_runtime["users"]
+        seg_runtime = seg_runtime.sort_values("avg_churn_probability", ascending=False).head(top_n_segments)
+        st.dataframe(
+            seg_runtime[["segment_key", "users", "avg_churn_probability", "high_risk_ratio"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # -----------------------------
+    # 🔬 Top-3 Driver Hypotheses
+    # -----------------------------
+    st.divider()
+    st.markdown("### 🔬 Top-3 Churn Driver Hypotheses")
+    hyp_payload = {
+        "available_hypothesis_rows": int(len(hypotheses)),
+        "unique_segments_with_hypotheses": int(hypotheses["segment_key"].nunique()) if not hypotheses.empty and "segment_key" in hypotheses.columns else 0,
+        "avg_effect_gap": float(hypotheses["effect_gap"].mean()) if not hypotheses.empty and "effect_gap" in hypotheses.columns else 0.0,
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Top-3 Churn Driver Hypotheses",
+            hyp_payload,
+            gemini_key,
+            "Each hypothesis is test-ready: it connects a churn driver to a measurable intervention experiment.",
+        )
+    )
+    if hypotheses.empty:
+        st.info("Hypothesis file not found. Run notebook export to generate `fintech_top3_churn_hypotheses.csv`.")
+    else:
+        seg_options = sorted(hypotheses["segment_key"].dropna().astype(str).unique().tolist())
+        default_seg = seg_options[0] if seg_options else None
+        selected_seg = st.selectbox("Select Segment", seg_options, index=0 if default_seg else None)
+        h = hypotheses[hypotheses["segment_key"].astype(str) == str(selected_seg)].sort_values("rank")
+        h = h.dropna(how="all")
+
+        show_cols = [c for c in ["rank", "driver_feature", "effect_gap", "hypothesis"] if c in h.columns]
+        visible_rows = max(len(h), 1)
+        table_height = min(420, max(120, 42 + visible_rows * 38))
+        st.dataframe(
+            h[show_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=table_height,
+        )
+
+    # -----------------------------
+    # 🚦 Action Funnel & Prioritization
+    # -----------------------------
+    st.divider()
+    st.markdown("### 🚦 Action Funnel & Prioritization")
+    total_users = len(f)
+    high_risk = int((f["churn_risk"] == "High").sum())
+    priority = int((f["priority_bucket"] != "Monitor & Nurture").sum())
+    critical = int((f["churn_probability"] >= min(0.95, threshold + 0.15)).sum())
+    hv_critical = int(((f["churn_probability"] >= min(0.95, threshold + 0.15)) & (f["rfm_segment"] == "High Value")).sum()) if "rfm_segment" in f.columns else 0
+    funnel_payload = {
+        "total_users": int(total_users),
+        "high_risk_users": int(high_risk),
+        "priority_users": int(priority),
+        "critical_users": int(critical),
+        "high_value_critical_users": int(hv_critical),
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Action Funnel & Prioritization",
+            funnel_payload,
+            gemini_key,
+            "It converts segment risk into execution stages, from total users to high-value critical intervention targets.",
+        )
+    )
+
+    funnel = pd.DataFrame(
         {
             "stage": [
-                "Total Customer Base",
-                "High-Risk Customers",
+                "Total Users",
+                "High-Risk Users",
                 "Priority Intervention",
                 "Critical Immediate Action",
-                "High-Value Critical Retention",
+                "High-Value Critical",
             ],
-            "count": [
-                total_customers,
-                high_risk_count,
-                priority_count,
-                critical_count,
-                vip_count,
-            ],
+            "count": [total_users, high_risk, priority, critical, hv_critical],
         }
     )
-    funnel_df["share_pct"] = (funnel_df["count"] / max(total_customers, 1) * 100).round(2)
+    funnel["share_pct"] = (funnel["count"] / max(total_users, 1) * 100).round(2)
 
-    left, right = st.columns([1.5, 1])
-    with left:
-        st.markdown("#### Intervention Funnel")
-        max_count = max(funnel_df["count"].max(), 1)
-        fig_funnel, ax_funnel = plt.subplots(figsize=(9, 4.8))
-        y_pos = np.arange(len(funnel_df))
-        counts = funnel_df["count"].values
-        left_offsets = (max_count - counts) / 2
-
-        ax_funnel.barh(
+    fl, fr = st.columns([1.45, 1])
+    with fl:
+        max_count = max(funnel["count"].max(), 1)
+        fig2, ax2 = plt.subplots(figsize=(9.2, 4.8))
+        y_pos = np.arange(len(funnel))
+        left_offsets = (max_count - funnel["count"].values) / 2
+        ax2.barh(
             y_pos,
-            counts,
+            funnel["count"].values,
             left=left_offsets,
-            color=["#2563EB", "#1D4ED8", "#0284C7", "#0EA5E9", "#22C55E"],
+            color=["#1D4ED8", "#2563EB", "#0284C7", "#0EA5E9", "#22C55E"],
             alpha=0.95,
         )
-        ax_funnel.set_yticks(y_pos)
-        ax_funnel.set_yticklabels(funnel_df["stage"])
-        ax_funnel.invert_yaxis()
-        ax_funnel.set_xlim(0, max_count)
-        ax_funnel.set_xlabel("Customers")
-        ax_funnel.set_title("Customer Risk-to-Action Funnel", fontsize=12, fontweight="bold")
-        ax_funnel.grid(axis="x", alpha=0.2)
+        ax2.set_yticks(y_pos)
+        ax2.set_yticklabels(funnel["stage"])
+        ax2.invert_yaxis()
+        ax2.set_xlim(0, max_count)
+        ax2.set_xlabel("Users")
+        ax2.set_title("Risk-to-Action Funnel", fontsize=11, fontweight="bold")
+        ax2.grid(axis="x", alpha=0.2)
 
-        for i, row in funnel_df.iterrows():
-            ax_funnel.text(
+        for i, row in funnel.iterrows():
+            ax2.text(
                 max_count * 0.98,
                 i,
-                f"{int(row['count']):,}  ({row['share_pct']:.1f}%)",
+                f"{int(row['count']):,} ({row['share_pct']:.1f}%)",
                 va="center",
                 ha="right",
                 fontsize=9,
                 color="white",
                 fontweight="bold",
             )
+        st.pyplot(fig2)
 
-        st.pyplot(fig_funnel)
+    with fr:
+        st.markdown("#### Priority Buckets")
+        bucket = (
+            f["priority_bucket"]
+            .value_counts()
+            .rename_axis("priority_bucket")
+            .reset_index(name="users")
+        )
+        bucket["share_pct"] = (bucket["users"] / len(f) * 100).round(2)
+        st.dataframe(bucket, use_container_width=True, hide_index=True)
 
-    with right:
-        st.markdown("#### Priority Strategy Mix")
-        st.dataframe(bucket_summary, use_container_width=True, hide_index=True)
-        st.markdown("#### Segment x Risk")
-        segment_risk_matrix = pd.crosstab(scored_df["segment_label"], scored_df["churn_risk"])
-        st.dataframe(segment_risk_matrix, use_container_width=True)
-
-    if y_true is not None and len(y_true) == len(scored_df):
-        y_eval = y_true.reset_index(drop=True)
-        y_pred = (scored_df["churn_probability"].reset_index(drop=True) >= selected_threshold).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_eval, y_pred).ravel()
-        total_pos = tp + fn
-        total_neg = tn + fp
-        tpr = tp / total_pos if total_pos else 0.0
-        tnr = tn / total_neg if total_neg else 0.0
-        fpr = fp / total_neg if total_neg else 0.0
-        fnr = fn / total_pos if total_pos else 0.0
-
-        st.markdown("#### 🧩 Confusion Metrics")
-        c_left, c_right = st.columns([1.2, 1])
-
-        with c_left:
-            cm = np.array([[tn, fp], [fn, tp]])
-            fig_cm, ax_cm = plt.subplots(figsize=(5.2, 4.2))
-            im = ax_cm.imshow(cm, cmap="Blues")
-            ax_cm.set_xticks([0, 1], labels=["Pred: No Churn", "Pred: Churn"])
-            ax_cm.set_yticks([0, 1], labels=["Actual: No Churn", "Actual: Churn"])
-            ax_cm.set_title("Confusion Matrix", fontsize=11, fontweight="bold")
-            for i in range(2):
-                for j in range(2):
-                    ax_cm.text(j, i, f"{cm[i, j]:,}", ha="center", va="center", color="#0B1220", fontweight="bold")
-            plt.colorbar(im, ax=ax_cm, fraction=0.046, pad=0.04)
-            st.pyplot(fig_cm)
-
-        with c_right:
-            r1, r2 = st.columns(2)
-            r1.metric("True Positive Rate", f"{tpr:.3f}")
-            r2.metric("True Negative Rate", f"{tnr:.3f}")
-            r3, r4 = st.columns(2)
-            r3.metric("False Positive Rate", f"{fpr:.3f}")
-            r4.metric("False Negative Rate", f"{fnr:.3f}")
-            st.caption(f"TP: {tp:,} | FP: {fp:,} | TN: {tn:,} | FN: {fn:,}")
-
-    summary_export = scored_df[
-        ["customer_id", "segment_label", "churn_probability", "churn_risk", "priority_bucket", "recommendation"]
-    ].copy()
-    summary_export = summary_export.sort_values("churn_probability", ascending=False).head(200)
-    csv_data = summary_export.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Download Prioritized Action List (Top 200)",
-        data=csv_data,
-        file_name="InsightForge_prioritized_actions.csv",
-        mime="text/csv",
+    # -----------------------------
+    # ✅ Strategic Conclusion
+    # -----------------------------
+    st.divider()
+    st.markdown("### ✅ Retention Command Center")
+    conclusion_payload = {
+        "primary_focus_bucket": str(top_bucket_current),
+        "high_risk_share_pct": float(high_ratio_current),
+        "avg_churn_probability_pct": float(avg_prob_current),
+    }
+    st.markdown(
+        safe_ai_explanation(
+            "Retention Command Center",
+            conclusion_payload,
+            gemini_key,
+            "Final action view: where risk is concentrated and which intervention buckets should be funded first.",
+        )
     )
 
+    end_left, end_right = st.columns([1.15, 1])
+    with end_left:
+        if {"priority_bucket", "churn_probability"}.issubset(f.columns):
+            action_impact = (
+                f.groupby("priority_bucket", as_index=False)
+                .agg(
+                    users=("user_id", "count"),
+                    avg_churn_probability=("churn_probability", "mean"),
+                )
+                .sort_values(["avg_churn_probability", "users"], ascending=[False, False])
+            )
+            action_impact["weighted_risk_load"] = action_impact["users"] * action_impact["avg_churn_probability"]
+            st.markdown("#### Weighted Risk Load by Intervention")
+            st.bar_chart(action_impact.set_index("priority_bucket")["weighted_risk_load"])
+        else:
+            st.info("Priority bucket columns are missing for final impact view.")
+
+    with end_right:
+
+        st.markdown("#### Retention Priority Quadrant")
+
+        st.markdown(
+            """
+            <style>
+
+            .quadrant-wrapper {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                border: 1px solid #243044;
+                border-radius: 18px;
+                overflow: hidden;
+                margin-top: 0.6rem;
+                background: #0B1220;
+            }
+
+            .quadrant-box {
+                min-height: 190px;
+                padding: 1.15rem;
+                border-right: 1px solid #243044;
+                border-bottom: 1px solid #243044;
+                position: relative;
+            }
+
+            .quadrant-box:nth-child(2),
+            .quadrant-box:nth-child(4) {
+                border-right: none;
+            }
+
+            .quadrant-box:nth-child(3),
+            .quadrant-box:nth-child(4) {
+                border-bottom: none;
+            }
+
+            .quadrant-label {
+                font-size: 0.72rem;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                color: #60A5FA;
+                margin-bottom: 0.6rem;
+            }
+
+            .quadrant-title {
+                font-size: 1.08rem;
+                font-weight: 700;
+                color: #F9FAFB;
+                margin-bottom: 0.75rem;
+                line-height: 1.3;
+            }
+
+            .quadrant-metric {
+                font-size: 2rem;
+                font-weight: 800;
+                color: #FFFFFF;
+                line-height: 1;
+                margin-bottom: 0.55rem;
+            }
+
+            .quadrant-sub {
+                color: #9CA3AF;
+                font-size: 0.82rem;
+                line-height: 1.45;
+            }
+
+            .quadrant-axis-x {
+                text-align: center;
+                color: #9CA3AF;
+                font-size: 0.78rem;
+                margin-top: 0.6rem;
+                letter-spacing: 0.4px;
+            }
+
+            .quadrant-axis-y {
+                position: absolute;
+                top: 50%;
+                left: -2.1rem;
+                transform: rotate(-90deg);
+                color: #9CA3AF;
+                font-size: 0.78rem;
+                letter-spacing: 0.4px;
+            }
+
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        high_risk_high_value = len(
+            f[
+                (f["rfm_segment"] == "High Value") &
+                (f["churn_risk"] == "High")
+            ]
+        )
+
+        dormant_users = len(
+            f[
+                f["lifecycle_stage"] == "Dormant"
+            ]
+        )
+
+        stable_users = len(
+            f[
+                (f["churn_risk"] == "Low") &
+                (f["rfm_segment"] == "High Value")
+            ]
+        )
+
+        reengage_users = len(
+            f[
+                (f["engagement_score"] < f["engagement_score"].median()) &
+                (f["churn_risk"] == "High")
+            ]
+        )
+
+        q1, q2 = st.columns(2)
+        q3, q4 = st.columns(2)
+
+        with q1:
+            st.markdown(
+                f"""
+                <div class="quadrant-box">
+                    <div class="quadrant-label">HIGH RISK • HIGH VALUE</div>
+                    <div class="quadrant-title">
+                        Immediate Retention
+                    </div>
+                    <div class="quadrant-metric">
+                        {high_risk_high_value:,}
+                    </div>
+                    <div class="quadrant-sub">
+                        Critical users requiring proactive retention intervention and personalized recovery campaigns.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with q2:
+            st.markdown(
+                f"""
+                <div class="quadrant-box">
+                    <div class="quadrant-label">LOW RISK • HIGH VALUE</div>
+                    <div class="quadrant-title">
+                        Loyalty Expansion
+                    </div>
+                    <div class="quadrant-metric">
+                        {stable_users:,}
+                    </div>
+                    <div class="quadrant-sub">
+                        Stable high-value users suitable for upsell, ecosystem expansion, and loyalty optimization.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with q3:
+            st.markdown(
+                f"""
+                <div class="quadrant-box">
+                    <div class="quadrant-label">HIGH RISK • LOW VALUE</div>
+                    <div class="quadrant-title">
+                        Automated Re-engagement
+                    </div>
+                    <div class="quadrant-metric">
+                        {reengage_users:,}
+                    </div>
+                    <div class="quadrant-sub">
+                        Low-engagement users requiring scalable behavioral nudges and lifecycle reactivation flows.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with q4:
+            st.markdown(
+                f"""
+                <div class="quadrant-box">
+                    <div class="quadrant-label">LOW RISK • LOW VALUE</div>
+                    <div class="quadrant-title">
+                        Monitor & Nurture
+                    </div>
+                    <div class="quadrant-metric">
+                        {dormant_users:,}
+                    </div>
+                    <div class="quadrant-sub">
+                        Stable portfolio users monitored through passive engagement and retention tracking systems.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            """
+            <div class="quadrant-axis-x">
+                LOW VALUE ⟶ ⟶ ⟶ BUSINESS VALUE ⟶ ⟶ ⟶ HIGH VALUE
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 if __name__ == "__main__":
     main()

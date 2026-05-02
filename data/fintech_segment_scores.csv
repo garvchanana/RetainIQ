@@ -1,0 +1,44 @@
+rfm_segment,lifecycle_stage,product_mix_segment,segment_key,users,avg_churn_probability,high_risk_users,high_risk_ratio
+Low Value,Dormant,Single Product,Low Value | Dormant | Single Product,599,0.8165828131489199,575,0.9599332220367279
+At Risk,Dormant,Single Product,At Risk | Dormant | Single Product,546,0.7844792281271477,507,0.9285714285714286
+Low Value,At Risk,Single Product,Low Value | At Risk | Single Product,780,0.658841834264858,651,0.8346153846153846
+At Risk,At Risk,Single Product,At Risk | At Risk | Single Product,1031,0.6084444774999407,798,0.7740058195926285
+Potential Loyalists,At Risk,Single Product,Potential Loyalists | At Risk | Single Product,255,0.5796452861484679,195,0.7647058823529411
+Low Value,Engaged,Single Product,Low Value | Engaged | Single Product,446,0.5046781639188328,295,0.6614349775784754
+Low Value,Dormant,Dual Product,Low Value | Dormant | Dual Product,522,0.47848809539770654,313,0.5996168582375478
+Potential Loyalists,Dormant,Dual Product,Potential Loyalists | Dormant | Dual Product,822,0.46999028510312674,482,0.5863746958637469
+At Risk,Engaged,Single Product,At Risk | Engaged | Single Product,2626,0.425808350224831,1444,0.5498857578065499
+Potential Loyalists,Engaged,Single Product,Potential Loyalists | Engaged | Single Product,3453,0.39302532208281754,1737,0.5030408340573415
+High Value,Engaged,Multi Product,High Value | Engaged | Multi Product,3000,0.36347087050350696,1122,0.374
+At Risk,Dormant,Dual Product,At Risk | Dormant | Dual Product,1320,0.35842350772757886,590,0.44696969696969696
+High Value,At Risk,Multi Product,High Value | At Risk | Multi Product,309,0.3504723196702208,109,0.35275080906148865
+High Value,Engaged,Dual Product,High Value | Engaged | Dual Product,2244,0.3136767411629381,808,0.3600713012477718
+Potential Loyalists,At Risk,Dual Product,Potential Loyalists | At Risk | Dual Product,2119,0.3130108242205517,812,0.38319962246342615
+Potential Loyalists,Dormant,Multi Product,Potential Loyalists | Dormant | Multi Product,1389,0.3124167820789669,484,0.3484521238300936
+Low Value,At Risk,Dual Product,Low Value | At Risk | Dual Product,581,0.28909523433953566,189,0.3253012048192771
+Low Value,Engaged,Dual Product,Low Value | Engaged | Dual Product,119,0.26403913651683364,36,0.3025210084033613
+High Value,Engaged,Power User,High Value | Engaged | Power User,99,0.26281564347893815,24,0.24242424242424243
+Potential Loyalists,At Risk,Multi Product,Potential Loyalists | At Risk | Multi Product,2405,0.25992591819425986,658,0.2735966735966736
+Potential Loyalists,Engaged,Power User,Potential Loyalists | Engaged | Power User,89,0.2519153532980977,24,0.2696629213483146
+High Value,Active,Multi Product,High Value | Active | Multi Product,1680,0.24066041798120047,393,0.23392857142857143
+At Risk,Active,Dual Product,At Risk | Active | Dual Product,10,0.2399606576816366,2,0.2
+Low Value,Active,Dual Product,Low Value | Active | Dual Product,2,0.23959518198522783,1,0.5
+High Value,At Risk,Power User,High Value | At Risk | Power User,26,0.21655020891694046,6,0.23076923076923078
+At Risk,At Risk,Dual Product,At Risk | At Risk | Dual Product,2290,0.2082693991515998,515,0.22489082969432314
+Low Value,Dormant,Multi Product,Low Value | Dormant | Multi Product,27,0.20688508539782968,6,0.2222222222222222
+Potential Loyalists,Engaged,Dual Product,Potential Loyalists | Engaged | Dual Product,9855,0.1862285028789882,1881,0.1908675799086758
+Potential Loyalists,At Risk,Power User,Potential Loyalists | At Risk | Power User,230,0.1848955535259683,39,0.16956521739130434
+Potential Loyalists,Engaged,Multi Product,Potential Loyalists | Engaged | Multi Product,3620,0.18346389393610976,662,0.18287292817679557
+Potential Loyalists,Dormant,Power User,Potential Loyalists | Dormant | Power User,137,0.1797789748227896,20,0.145985401459854
+High Value,Active,Power User,High Value | Active | Power User,387,0.1777853935577017,62,0.16020671834625322
+At Risk,Engaged,Dual Product,At Risk | Engaged | Dual Product,2805,0.17758785163463195,471,0.1679144385026738
+At Risk,Dormant,Power User,At Risk | Dormant | Power User,42,0.15455912891734008,6,0.14285714285714285
+Potential Loyalists,Active,Multi Product,Potential Loyalists | Active | Multi Product,2034,0.1542089141505498,281,0.13815142576204523
+At Risk,Dormant,Multi Product,At Risk | Dormant | Multi Product,657,0.15127059686695846,77,0.1171993911719939
+Potential Loyalists,Active,Power User,Potential Loyalists | Active | Power User,380,0.1491719310940992,45,0.11842105263157894
+Potential Loyalists,Active,Dual Product,Potential Loyalists | Active | Dual Product,9,0.12708856079840727,1,0.1111111111111111
+At Risk,At Risk,Multi Product,At Risk | At Risk | Multi Product,742,0.11921147743903905,57,0.07681940700808626
+At Risk,At Risk,Power User,At Risk | At Risk | Power User,42,0.11220747105990285,2,0.047619047619047616
+At Risk,Engaged,Multi Product,At Risk | Engaged | Multi Product,151,0.10854383800168688,5,0.033112582781456956
+Low Value,At Risk,Multi Product,Low Value | At Risk | Multi Product,21,0.09710982165611542,0,0.0
+At Risk,Active,Multi Product,At Risk | Active | Multi Product,99,0.0950884702721073,2,0.020202020202020204

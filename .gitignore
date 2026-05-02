@@ -1,12 +1,31 @@
-﻿__pycache__/
+﻿# Python cache
+__pycache__/
+*.pyc
 *.py[cod]
 *.pyo
 *.pyd
+
+# Notebook checkpoints
 .ipynb_checkpoints/
+
+# Virtual environments
 .venv/
 venv/
 env/
+
+# Environment variables
+.env
+
+# Logs & temp files
+*.log
+*.tmp
+
+# OS files
 .DS_Store
 Thumbs.db
+
+# IDE settings
 .idea/
 .vscode/
+
+data/fintech_user_events.csv
