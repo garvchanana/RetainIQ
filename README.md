@@ -82,7 +82,6 @@ RetainIQ/
 ├── .gitignore
 │
 ├── data/
-│   ├── fintech_user_events.csv
 │   ├── processed_fintech_data.csv
 │   ├── fintech_scored_users.csv
 │   ├── fintech_segment_scores.csv
@@ -181,7 +180,8 @@ Business-oriented retention prioritization framework for strategic execution pla
 - matplotlib
 
 ### AI Integration
-- Google Gemini API
+- Google Gemini REST API
+- Dynamic executive insight generation
 
 ---
 
@@ -258,8 +258,9 @@ RetainIQ is designed around:
 - executive readability
 - behavioral analytics
 - strategic retention decision-making
+- focuses on actionable business intelligence rather than model-centric visualization.
 
-The project intentionally focuses on actionable business intelligence rather than model-centric visualization.
+The platform uses lightweight REST-based AI integration for scalable and deployment-safe insight generation.
 
 ---
 
@@ -271,6 +272,31 @@ Potential future extensions:
 - intervention outcome tracking
 - automated retention experimentation
 - partner-level risk analytics
+
+---
+
+## Deployment
+
+RetainIQ is deployed using Streamlit Cloud with environment-based secret management.
+
+### Deployment Stack
+- Streamlit Cloud
+- GitHub Repository Integration
+- Gemini REST API Integration
+
+### Environment Variables
+
+Configure the following secret inside Streamlit Cloud:
+
+```toml
+GEMINI_API_KEY = "your_api_key"
+```
+
+### Launch Application
+
+```bash
+streamlit run app.py
+```
 
 ---
 
