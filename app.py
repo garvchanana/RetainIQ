@@ -192,7 +192,6 @@ def safe_ai_explanation(section: str, payload: dict, api_key: str, fallback_text
     try:
         return generate_ai_explanation(section, payload, api_key)
     except Exception as exc:
-        st.error(f"Gemini Error: {exc}")
         return fallback_text
 
 
