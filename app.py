@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import google.generativeai as genai
+import requests
 
 load_dotenv()
 
@@ -159,39 +159,86 @@ def render_empty_state() -> None:
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def generate_ai_explanation(section: str, payload: dict, api_key: str) -> str:
-    clean_key = (api_key or "").strip().replace("\r", "").replace("\n", "")
-    genai.configure(api_key=clean_key)
+def generate_ai_explanation(
+    section: str,
+    payload: dict,
+    api_key: str,
+) -> str:
+
     prompt = f"""
-    You are a fintech retention intelligence analyst.
+    You are a fintech analytics explanation assistant.
 
     Section: {section}
-    Metrics: {json.dumps(payload)}
 
-    Generate one sharp business insight in under 25 words.
-    Focus on churn risk, user behavior, segment trends, or retention actions.
-    Professional, executive-level, concise, and data-driven.
-    No bullets, markdown, labels, or filler language.
+    Metrics payload:
+    {json.dumps(payload)}
+
+    Write exactly 1 concise business-facing insight.
+    Maximum 28 words.
+    Clear, strategic, operational.
+    No bullets.
+    No markdown.
     """
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/gemini-1.5-flash:generateContent?key={api_key}"
+    )
+
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+    }
+
     try:
-        response = genai.GenerativeModel(
-            "gemini-1.5-flash"
-        ).generate_content(prompt)
 
-        text = (response.text or "").strip()
+        response = requests.post(
+            url,
+            json=body,
+            timeout=20,
+        )
 
-        return text if text else "AI explanation unavailable for this section."
+        response.raise_for_status()
+
+        result = response.json()
+
+        text = (
+            result["candidates"][0]
+            ["content"]["parts"][0]["text"]
+            .strip()
+        )
+
+        return text
 
     except Exception as exc:
+
         raise RuntimeError(
             f"Gemini API request failed: {exc}"
         ) from exc
 
 
-def safe_ai_explanation(section: str, payload: dict, api_key: str, fallback_text: str) -> str:
+def safe_ai_explanation(
+    section: str,
+    payload: dict,
+    api_key: str,
+    fallback_text: str,
+) -> str:
+
     try:
-        return generate_ai_explanation(section, payload, api_key)
-    except Exception as exc:
+        return generate_ai_explanation(
+            section,
+            payload,
+            api_key,
+        )
+
+    except Exception:
         return fallback_text
 
 
