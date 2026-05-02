@@ -175,7 +175,7 @@ def generate_ai_explanation(section: str, payload: dict, api_key: str) -> str:
     """
     try:
         response = genai.GenerativeModel(
-            "gemini-1.5-flash-latest"
+            "models/gemini-pro"
         ).generate_content(prompt)
 
         text = (response.text or "").strip()
