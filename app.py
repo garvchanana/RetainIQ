@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from google import genai
+import google.generativeai as genai
 from google.genai import errors as genai_errors
 
 load_dotenv()
@@ -162,7 +162,7 @@ def render_empty_state() -> None:
 @st.cache_data(show_spinner=False, ttl=600)
 def generate_ai_explanation(section: str, payload: dict, api_key: str) -> str:
     clean_key = (api_key or "").strip().replace("\r", "").replace("\n", "")
-    client = genai.Client(api_key=clean_key)
+    genai.configure(api_key=clean_key)
     prompt = f"""
     You are a fintech retention intelligence analyst.
 
@@ -175,14 +175,18 @@ def generate_ai_explanation(section: str, payload: dict, api_key: str) -> str:
     No bullets, markdown, labels, or filler language.
     """
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
+        response = genai.GenerativeModel(
+            "gemini-1.5-flash"
+        ).generate_content(prompt)
+
         text = (response.text or "").strip()
+
         return text if text else "AI explanation unavailable for this section."
-    except genai_errors.ClientError as exc:
-        raise RuntimeError(f"Gemini API request failed: {exc}") from exc
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Gemini API request failed: {exc}"
+        ) from exc
 
 
 def safe_ai_explanation(section: str, payload: dict, api_key: str, fallback_text: str) -> str:
