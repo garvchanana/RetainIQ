@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import google.generativeai as genai
-from google.genai import errors as genai_errors
 
 load_dotenv()
 
