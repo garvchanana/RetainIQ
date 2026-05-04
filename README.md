@@ -1,6 +1,6 @@
-﻿# RetainIQ — Fintech Retention Intelligence Platform
+﻿# RetainIQ — Fintech User Segmentation & Churn Intelligence Platform
 
-AI-powered fintech analytics platform for behavioral user segmentation, churn risk prediction, retention prioritization, and operational decision intelligence.
+AI-powered fintech intelligence platform for behavioral user segmentation, churn prediction, retention prioritization, and strategic customer risk analytics.
 
 ---
 
@@ -180,7 +180,8 @@ Business-oriented retention prioritization framework for strategic execution pla
 - matplotlib
 
 ### AI Integration
-- Google Gemini REST API
+- OpenRouter REST API
+- Llama 3.1 Free Instruct Model
 - Dynamic executive insight generation
 
 ---
@@ -260,7 +261,7 @@ RetainIQ is designed around:
 - strategic retention decision-making
 - focuses on actionable business intelligence rather than model-centric visualization.
 
-The platform uses lightweight REST-based AI integration for scalable and deployment-safe insight generation.
+The platform uses lightweight OpenRouter REST-based AI integration for scalable and deployment-safe executive insight generation.
 
 ---
 
@@ -282,14 +283,14 @@ RetainIQ is deployed using Streamlit Cloud with environment-based secret managem
 ### Deployment Stack
 - Streamlit Cloud
 - GitHub Repository Integration
-- Gemini REST API Integration
+- OpenRouter REST API Integration
 
 ### Environment Variables
 
 Configure the following secret inside Streamlit Cloud:
 
 ```toml
-GEMINI_API_KEY = "your_api_key"
+OPENROUTER_API_KEY = "your_api_key"
 ```
 
 ### Launch Application

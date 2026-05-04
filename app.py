@@ -180,27 +180,30 @@ def generate_ai_explanation(
     No markdown.
     """
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/gemini-1.5-flash:generateContent?key={api_key}"
-    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     body = {
-        "contents": [
+        "model": "meta-llama/llama-3.1-8b-instruct:free",
+
+        "messages": [
             {
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
+                "role": "user",
+                "content": prompt
             }
-        ]
+        ],
+
+        "temperature": 0.4,
+        "max_tokens": 60,
     }
 
     try:
 
         response = requests.post(
-            url,
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
             json=body,
             timeout=20,
         )
@@ -210,17 +213,18 @@ def generate_ai_explanation(
         result = response.json()
 
         text = (
-            result["candidates"][0]
-            ["content"]["parts"][0]["text"]
+            result["choices"][0]["message"]["content"]
             .strip()
         )
 
-        return text
+        return text if text else (
+            "AI explanation unavailable for this section."
+        )
 
     except Exception as exc:
 
         raise RuntimeError(
-            f"Gemini API request failed: {exc}"
+            f"OpenRouter API request failed: {exc}"
         ) from exc
 
 
@@ -267,9 +271,9 @@ def main() -> None:
         render_empty_state()
         st.stop()
 
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
-    gemini_key = gemini_key.strip().replace("\r", "").replace("\n", "")
-    if not gemini_key:
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_key = openrouter_key.strip().replace("\r", "").replace("\n", "")
+    if not openrouter_key:
         st.error("GEMINI_API_KEY is required. Add it to .env in the project root and rerun.")
         st.stop()
 
@@ -404,7 +408,7 @@ def main() -> None:
         safe_ai_explanation(
             "Executive Snapshot",
             exec_payload,
-            gemini_key,
+            openrouter_key,
             "A quick view of current portfolio exposure: coverage, average risk intensity, and active decision threshold.",
         )
     )
@@ -435,7 +439,7 @@ def main() -> None:
         safe_ai_explanation(
             "Segmentation Intelligence",
             seg_payload,
-            gemini_key,
+            openrouter_key,
             "This section explains where churn concentration is forming across behavior layers: RFM, lifecycle, and product mix.",
         )
     )
@@ -550,7 +554,7 @@ def main() -> None:
         safe_ai_explanation(
             "Churn Risk Engine",
             risk_payload,
-            gemini_key,
+            openrouter_key,
             "Probability distribution and risky-segment ranking help prioritize interventions with calibrated confidence.",
         )
     )
@@ -600,7 +604,7 @@ def main() -> None:
         safe_ai_explanation(
             "Top-3 Churn Driver Hypotheses",
             hyp_payload,
-            gemini_key,
+            openrouter_key,
             "Each hypothesis is test-ready: it connects a churn driver to a measurable intervention experiment.",
         )
     )
@@ -644,7 +648,7 @@ def main() -> None:
         safe_ai_explanation(
             "Action Funnel & Prioritization",
             funnel_payload,
-            gemini_key,
+            openrouter_key,
             "It converts segment risk into execution stages, from total users to high-value critical intervention targets.",
         )
     )
@@ -722,7 +726,7 @@ def main() -> None:
         safe_ai_explanation(
             "Retention Command Center",
             conclusion_payload,
-            gemini_key,
+            openrouter_key,
             "Final action view: where risk is concentrated and which intervention buckets should be funded first.",
         )
     )
