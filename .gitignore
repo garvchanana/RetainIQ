@@ -27,5 +27,7 @@ Thumbs.db
 # IDE settings
 .idea/
 .vscode/
+.devcontainer/
 
 data/fintech_user_events.csv
+
