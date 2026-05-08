@@ -183,6 +183,8 @@ def generate_ai_explanation(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://retainiq.streamlit.app",
+        "X-Title": "RetainIQ",
     }
 
     body = {
@@ -212,10 +214,12 @@ def generate_ai_explanation(
 
         result = response.json()
 
-        text = (
-            result["choices"][0]["message"]["content"]
-            .strip()
-        )
+        choices = result.get("choices", [])
+        if not choices:
+            error_msg = result.get("error", {}).get("message", "No choices returned by model.")
+            return f"AI explanation unavailable: {error_msg}"
+
+        text = choices[0]["message"]["content"].strip()
 
         return text if text else (
             "AI explanation unavailable for this section."
@@ -274,7 +278,7 @@ def main() -> None:
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_key = openrouter_key.strip().replace("\r", "").replace("\n", "")
     if not openrouter_key:
-        st.error("GEMINI_API_KEY is required. Add it to .env in the project root and rerun.")
+        st.error("OPENROUTER_API_KEY is required. Add it to .env in the project root and rerun.")
         st.stop()
 
     with st.sidebar:
