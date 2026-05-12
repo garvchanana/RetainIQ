@@ -183,12 +183,10 @@ def generate_ai_explanation(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://retainiq.streamlit.app",
-        "X-Title": "RetainIQ",
     }
 
     body = {
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "llama-3.1-8b-instant",
 
         "messages": [
             {
@@ -204,7 +202,7 @@ def generate_ai_explanation(
     try:
 
         response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
+            url="https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=body,
             timeout=20,
@@ -228,7 +226,7 @@ def generate_ai_explanation(
     except Exception as exc:
 
         raise RuntimeError(
-            f"OpenRouter API request failed: {exc}"
+            f"Groq API request failed: {exc}"
         ) from exc
 
 
@@ -275,10 +273,10 @@ def main() -> None:
         render_empty_state()
         st.stop()
 
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-    openrouter_key = openrouter_key.strip().replace("\r", "").replace("\n", "")
-    if not openrouter_key:
-        st.error("OPENROUTER_API_KEY is required. Add it to .env in the project root and rerun.")
+    groq_key = os.getenv("GROQ_API_KEY", "") or st.secrets.get("GROQ_API_KEY", "")
+    groq_key = groq_key.strip().replace("\r", "").replace("\n", "")
+    if not groq_key:
+        st.error("GROQ_API_KEY is required. Add it to .env (local) or Streamlit secrets (deployed) and rerun.")
         st.stop()
 
     with st.sidebar:
@@ -412,7 +410,7 @@ def main() -> None:
         safe_ai_explanation(
             "Executive Snapshot",
             exec_payload,
-            openrouter_key,
+            groq_key,
             "A quick view of current portfolio exposure: coverage, average risk intensity, and active decision threshold.",
         )
     )
@@ -443,7 +441,7 @@ def main() -> None:
         safe_ai_explanation(
             "Segmentation Intelligence",
             seg_payload,
-            openrouter_key,
+            groq_key,
             "This section explains where churn concentration is forming across behavior layers: RFM, lifecycle, and product mix.",
         )
     )
@@ -558,7 +556,7 @@ def main() -> None:
         safe_ai_explanation(
             "Churn Risk Engine",
             risk_payload,
-            openrouter_key,
+            groq_key,
             "Probability distribution and risky-segment ranking help prioritize interventions with calibrated confidence.",
         )
     )
@@ -608,7 +606,7 @@ def main() -> None:
         safe_ai_explanation(
             "Top-3 Churn Driver Hypotheses",
             hyp_payload,
-            openrouter_key,
+            groq_key,
             "Each hypothesis is test-ready: it connects a churn driver to a measurable intervention experiment.",
         )
     )
@@ -652,7 +650,7 @@ def main() -> None:
         safe_ai_explanation(
             "Action Funnel & Prioritization",
             funnel_payload,
-            openrouter_key,
+            groq_key,
             "It converts segment risk into execution stages, from total users to high-value critical intervention targets.",
         )
     )
@@ -730,7 +728,7 @@ def main() -> None:
         safe_ai_explanation(
             "Retention Command Center",
             conclusion_payload,
-            openrouter_key,
+            groq_key,
             "Final action view: where risk is concentrated and which intervention buckets should be funded first.",
         )
     )
